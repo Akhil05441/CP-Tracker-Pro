@@ -1,0 +1,799 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CP Tracker Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #1f2937 0%, #6b21a8 50%, #1f2937 100%);
+            min-height: 100vh;
+        }
+        .hover-scale:hover {
+            transform: scale(1.02);
+            transition: transform 0.2s;
+        }
+    </style>
+</head>
+<body class="font-sans antialiased">
+    <div id="app"></div>
+
+    <script>
+        // Data Storage using LocalStorage
+        class Storage {
+            static get(key) {
+                try {
+                    const data = localStorage.getItem(key);
+                    return data ? JSON.parse(data) : null;
+                } catch (error) {
+                    console.error('Storage get error:', error);
+                    return null;
+                }
+            }
+
+            static set(key, value) {
+                try {
+                    localStorage.setItem(key, JSON.stringify(value));
+                    return true;
+                } catch (error) {
+                    console.error('Storage set error:', error);
+                    return false;
+                }
+            }
+
+            static delete(key) {
+                try {
+                    localStorage.removeItem(key);
+                    return true;
+                } catch (error) {
+                    console.error('Storage delete error:', error);
+                    return false;
+                }
+            }
+        }
+
+        // App State
+        const state = {
+            currentView: 'dashboard',
+            problems: Storage.get('cp-problems') || [],
+            showAddModal: false,
+            showSyncModal: false,
+            filterTopic: 'all',
+            filterStatus: 'all',
+            searchQuery: '',
+            syncData: {
+                platform: 'CodeForces',
+                username: '',
+                syncing: false,
+                error: ''
+            },
+            newProblem: {
+                name: '',
+                difficulty: 'Easy',
+                topic: 'Arrays',
+                platform: 'LeetCode',
+                status: 'unsolved',
+                link: '',
+                notes: ''
+            }
+        };
+
+        const topics = ['Arrays', 'Strings', 'Two Pointers', 'Binary Search', 'Sorting', 'Greedy', 'Dynamic Programming', 'Graphs', 'Trees', 'Math', 'Recursion', 'Backtracking', 'Bit Manipulation', 'Stack', 'Queue', 'Heap'];
+        const platforms = ['CodeForces', 'CodeChef', 'LeetCode', 'AtCoder', 'CSES'];
+
+        // Chart instances
+        let topicChart = null;
+        let difficultyChart = null;
+
+        // Functions
+        function saveProblems() {
+            Storage.set('cp-problems', state.problems);
+        }
+
+        function addProblem() {
+            if (!state.newProblem.name.trim()) {
+                alert('Please enter a problem name!');
+                return;
+            }
+
+            const problem = {
+                ...state.newProblem,
+                id: Date.now(),
+                dateSolved: state.newProblem.status === 'solved' ? new Date().toISOString().split('T')[0] : null,
+                dateAdded: new Date().toISOString().split('T')[0]
+            };
+
+            state.problems.push(problem);
+            saveProblems();
+            state.showAddModal = false;
+            
+            // Reset form based on platform
+            const defaultDifficulty = state.newProblem.platform === 'LeetCode' ? 'Easy' : 900;
+            state.newProblem = {
+                name: '',
+                difficulty: defaultDifficulty,
+                topic: 'Arrays',
+                platform: state.newProblem.platform,
+                status: 'unsolved',
+                link: '',
+                notes: ''
+            };
+            render();
+        }
+
+        function updateProblemStatus(id, newStatus) {
+            const problem = state.problems.find(p => p.id === id);
+            if (problem) {
+                problem.status = newStatus;
+                problem.dateSolved = newStatus === 'solved' ? new Date().toISOString().split('T')[0] : null;
+                saveProblems();
+                render();
+            }
+        }
+
+        function deleteProblem(id) {
+            if (confirm('Are you sure you want to delete this problem?')) {
+                state.problems = state.problems.filter(p => p.id !== id);
+                saveProblems();
+                render();
+            }
+        }
+
+        function getStats() {
+            return {
+                total: state.problems.length,
+                solved: state.problems.filter(p => p.status === 'solved').length,
+                unsolved: state.problems.filter(p => p.status === 'unsolved').length,
+                revisit: state.problems.filter(p => p.status === 'revisit').length
+            };
+        }
+
+        function getTopicStats() {
+            return topics.map(topic => ({
+                name: topic,
+                solved: state.problems.filter(p => p.topic === topic && p.status === 'solved').length,
+                total: state.problems.filter(p => p.topic === topic).length
+            })).filter(t => t.total > 0);
+        }
+
+        function getDifficultyStats() {
+            // Check if we have LeetCode problems
+            const hasLeetCode = state.problems.some(p => p.platform === 'LeetCode');
+            const hasNumeric = state.problems.some(p => typeof p.difficulty === 'number');
+
+            if (hasLeetCode && !hasNumeric) {
+                // Only LeetCode style difficulties
+                return [
+                    { name: 'Easy', value: state.problems.filter(p => p.difficulty === 'Easy').length },
+                    { name: 'Medium', value: state.problems.filter(p => p.difficulty === 'Medium').length },
+                    { name: 'Hard', value: state.problems.filter(p => p.difficulty === 'Hard').length }
+                ].filter(d => d.value > 0);
+            } else if (hasNumeric) {
+                // Numeric ratings (CodeForces, etc.)
+                return [
+                    { name: '800-1000', value: state.problems.filter(p => typeof p.difficulty === 'number' && p.difficulty >= 800 && p.difficulty < 1000).length },
+                    { name: '1000-1200', value: state.problems.filter(p => typeof p.difficulty === 'number' && p.difficulty >= 1000 && p.difficulty < 1200).length },
+                    { name: '1200-1400', value: state.problems.filter(p => typeof p.difficulty === 'number' && p.difficulty >= 1200 && p.difficulty < 1400).length },
+                    { name: '1400+', value: state.problems.filter(p => typeof p.difficulty === 'number' && p.difficulty >= 1400).length }
+                ].filter(d => d.value > 0);
+            } else {
+                return [];
+            }
+        }
+
+        function getFilteredProblems() {
+            return state.problems.filter(p => {
+                const matchesTopic = state.filterTopic === 'all' || p.topic === state.filterTopic;
+                const matchesStatus = state.filterStatus === 'all' || p.status === state.filterStatus;
+                const matchesSearch = p.name.toLowerCase().includes(state.searchQuery.toLowerCase());
+                return matchesTopic && matchesStatus && matchesSearch;
+            });
+        }
+
+        // Sync Functions
+        async function syncProfile() {
+            const { platform, username } = state.syncData;
+            
+            if (!username.trim()) {
+                state.syncData.error = 'Please enter a username!';
+                render();
+                return;
+            }
+
+            state.syncData.syncing = true;
+            state.syncData.error = '';
+            render();
+
+            try {
+                let submissions = [];
+                
+                if (platform === 'CodeForces') {
+                    submissions = await fetchCodeForces(username);
+                } else if (platform === 'LeetCode') {
+                    submissions = await fetchLeetCode(username);
+                } else {
+                    state.syncData.error = `${platform} sync coming soon! Use manual entry for now.`;
+                    state.syncData.syncing = false;
+                    render();
+                    return;
+                }
+
+                // Add fetched problems to state
+                let addedCount = 0;
+                submissions.forEach(submission => {
+                    // Check if problem already exists
+                    const exists = state.problems.some(p => 
+                        p.name.toLowerCase() === submission.name.toLowerCase() && 
+                        p.platform === platform
+                    );
+                    
+                    if (!exists) {
+                        state.problems.push({
+                            ...submission,
+                            id: Date.now() + addedCount,
+                            dateAdded: new Date().toISOString().split('T')[0]
+                        });
+                        addedCount++;
+                    }
+                });
+
+                saveProblems();
+                state.syncData.syncing = false;
+                state.showSyncModal = false;
+                state.syncData.username = '';
+                
+                alert(`✅ Successfully synced ${addedCount} problems from ${platform}!`);
+                render();
+
+            } catch (error) {
+                console.error('Sync error:', error);
+                state.syncData.error = error.message || 'Failed to sync. Please check username and try again.';
+                state.syncData.syncing = false;
+                render();
+            }
+        }
+
+        async function fetchCodeForces(username) {
+            const response = await fetch(`https://codeforces.com/api/user.status?handle=${username}&from=1&count=100`);
+            
+            if (!response.ok) {
+                throw new Error('User not found or API error. Please check username.');
+            }
+
+            const data = await response.json();
+            
+            if (data.status !== 'OK') {
+                throw new Error('Failed to fetch CodeForces data. User may not exist.');
+            }
+
+            // Get only accepted submissions
+            const accepted = data.result.filter(sub => sub.verdict === 'OK');
+            
+            // Remove duplicates by problem name
+            const uniqueProblems = new Map();
+            accepted.forEach(sub => {
+                const problemName = sub.problem.name;
+                const problemId = `${sub.problem.contestId}${sub.problem.index}`;
+                
+                if (!uniqueProblems.has(problemName)) {
+                    uniqueProblems.set(problemName, {
+                        name: problemName,
+                        difficulty: sub.problem.rating || 800,
+                        topic: sub.problem.tags[0] ? mapCFTagToTopic(sub.problem.tags[0]) : 'Math',
+                        platform: 'CodeForces',
+                        status: 'solved',
+                        link: `https://codeforces.com/problemset/problem/${sub.problem.contestId}/${sub.problem.index}`,
+                        notes: `Tags: ${sub.problem.tags.join(', ')}`,
+                        dateSolved: new Date(sub.creationTimeSeconds * 1000).toISOString().split('T')[0]
+                    });
+                }
+            });
+
+            return Array.from(uniqueProblems.values());
+        }
+
+        async function fetchLeetCode(username) {
+            // Note: LeetCode doesn't have a public API, so we'll use GraphQL endpoint
+            // This might not work due to CORS, but we'll try
+            
+            const query = `
+                query getUserProfile($username: String!) {
+                    matchedUser(username: $username) {
+                        submitStats {
+                            acSubmissionNum {
+                                difficulty
+                                count
+                            }
+                        }
+                    }
+                    recentSubmissionList(username: $username, limit: 20) {
+                        title
+                        titleSlug
+                        timestamp
+                        statusDisplay
+                    }
+                }
+            `;
+
+            try {
+                const response = await fetch('https://leetcode.com/graphql', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        query: query,
+                        variables: { username: username }
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error('LeetCode API error');
+                }
+
+                const data = await response.json();
+                
+                if (!data.data || !data.data.recentSubmissionList) {
+                    throw new Error('User not found or no submissions');
+                }
+
+                // Get accepted submissions
+                const accepted = data.data.recentSubmissionList.filter(sub => 
+                    sub.statusDisplay === 'Accepted'
+                );
+
+                return accepted.map(sub => ({
+                    name: sub.title,
+                    difficulty: 'Medium', // Default, as API doesn't provide difficulty easily
+                    topic: 'Arrays', // Default
+                    platform: 'LeetCode',
+                    status: 'solved',
+                    link: `https://leetcode.com/problems/${sub.titleSlug}/`,
+                    notes: 'Synced from LeetCode',
+                    dateSolved: new Date(parseInt(sub.timestamp) * 1000).toISOString().split('T')[0]
+                }));
+
+            } catch (error) {
+                // LeetCode API often fails due to CORS, provide fallback message
+                throw new Error('LeetCode sync blocked by CORS. Please use manual entry or try from a browser extension.');
+            }
+        }
+
+        function mapCFTagToTopic(tag) {
+            const tagMap = {
+                'dp': 'Dynamic Programming',
+                'greedy': 'Greedy',
+                'graphs': 'Graphs',
+                'trees': 'Trees',
+                'math': 'Math',
+                'implementation': 'Arrays',
+                'binary search': 'Binary Search',
+                'two pointers': 'Two Pointers',
+                'strings': 'Strings',
+                'sortings': 'Sorting',
+                'dfs and similar': 'Graphs',
+                'bfs': 'Graphs',
+                'brute force': 'Arrays',
+                'constructive algorithms': 'Greedy',
+                'data structures': 'Stack',
+                'number theory': 'Math',
+                'combinatorics': 'Math',
+                'bitmasks': 'Bit Manipulation',
+                'recursion': 'Recursion'
+            };
+
+            const lowerTag = tag.toLowerCase();
+            return tagMap[lowerTag] || 'Math';
+        }
+
+        function createCharts() {
+            const topicStats = getTopicStats();
+            const difficultyStats = getDifficultyStats();
+
+            // Destroy existing charts
+            if (topicChart) topicChart.destroy();
+            if (difficultyChart) difficultyChart.destroy();
+
+            // Topic Chart
+            const topicCtx = document.getElementById('topicChart');
+            if (topicCtx && topicStats.length > 0) {
+                topicChart = new Chart(topicCtx, {
+                    type: 'bar',
+                    data: {
+                        labels: topicStats.map(t => t.name),
+                        datasets: [
+                            {
+                                label: 'Solved',
+                                data: topicStats.map(t => t.solved),
+                                backgroundColor: '#8b5cf6'
+                            },
+                            {
+                                label: 'Total',
+                                data: topicStats.map(t => t.total),
+                                backgroundColor: '#4b5563'
+                            }
+                        ]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        aspectRatio: 2,
+                        scales: {
+                            x: { 
+                                ticks: { color: '#9ca3af', maxRotation: 45, minRotation: 45 }, 
+                                grid: { color: '#374151' } 
+                            },
+                            y: { 
+                                ticks: { color: '#9ca3af' }, 
+                                grid: { color: '#374151' },
+                                beginAtZero: true
+                            }
+                        },
+                        plugins: {
+                            legend: { labels: { color: '#fff' } }
+                        }
+                    }
+                });
+            }
+
+            // Difficulty Chart
+            const diffCtx = document.getElementById('difficultyChart');
+            if (diffCtx && difficultyStats.length > 0) {
+                difficultyChart = new Chart(diffCtx, {
+                    type: 'pie',
+                    data: {
+                        labels: difficultyStats.map(d => d.name),
+                        datasets: [{
+                            data: difficultyStats.map(d => d.value),
+                            backgroundColor: ['#8b5cf6', '#ec4899', '#3b82f6', '#10b981']
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: true,
+                        aspectRatio: 1.5,
+                        plugins: {
+                            legend: { 
+                                labels: { color: '#fff' },
+                                position: 'bottom'
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        // Render Functions
+        function renderHeader() {
+            return `
+                <div class="bg-gray-900/50 backdrop-blur-sm border-b border-gray-800">
+                    <div class="max-w-7xl mx-auto px-4 py-4">
+                        <div class="flex items-center justify-between">
+                            <div class="flex items-center gap-3">
+                                <div class="bg-gradient-to-br from-purple-500 to-pink-500 p-2 rounded-lg">
+                                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+                                    </svg>
+                                </div>
+                                <h1 class="text-2xl font-bold text-white">CP Tracker Pro</h1>
+                            </div>
+                            <button onclick="state.showAddModal = true; render();" class="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-medium hover:from-purple-600 hover:to-pink-600 transition">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                </svg>
+                                Add Problem
+                            </button>
+                            <button onclick="state.showSyncModal = true; render();" class="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-lg font-medium hover:from-blue-600 hover:to-cyan-600 transition">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                </svg>
+                                Sync Profile
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderNavigation() {
+            return `
+                <div class="bg-gray-900/30 backdrop-blur-sm border-b border-gray-800">
+                    <div class="max-w-7xl mx-auto px-4">
+                        <div class="flex gap-4">
+                            <button onclick="state.currentView = 'dashboard'; render();" class="px-6 py-3 font-medium transition ${state.currentView === 'dashboard' ? 'text-purple-400 border-b-2 border-purple-400' : 'text-gray-400 hover:text-gray-300'}">
+                                Dashboard
+                            </button>
+                            <button onclick="state.currentView = 'problems'; render();" class="px-6 py-3 font-medium transition ${state.currentView === 'problems' ? 'text-purple-400 border-b-2 border-purple-400' : 'text-gray-400 hover:text-gray-300'}">
+                                Problems (${state.problems.length})
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderDashboard() {
+            const stats = getStats();
+            const topicStats = getTopicStats();
+            const difficultyStats = getDifficultyStats();
+
+            return `
+                <div class="space-y-6">
+                    <!-- Stats Cards -->
+                    <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                        <div class="bg-gradient-to-br from-purple-500 to-purple-700 rounded-xl p-6 text-white hover-scale">
+                            <p class="text-purple-100 text-sm">Total Problems</p>
+                            <p class="text-3xl font-bold mt-1">${stats.total}</p>
+                        </div>
+                        <div class="bg-gradient-to-br from-green-500 to-green-700 rounded-xl p-6 text-white hover-scale">
+                            <p class="text-green-100 text-sm">Solved</p>
+                            <p class="text-3xl font-bold mt-1">${stats.solved}</p>
+                        </div>
+                        <div class="bg-gradient-to-br from-red-500 to-red-700 rounded-xl p-6 text-white hover-scale">
+                            <p class="text-red-100 text-sm">Unsolved</p>
+                            <p class="text-3xl font-bold mt-1">${stats.unsolved}</p>
+                        </div>
+                        <div class="bg-gradient-to-br from-yellow-500 to-yellow-700 rounded-xl p-6 text-white hover-scale">
+                            <p class="text-yellow-100 text-sm">To Revisit</p>
+                            <p class="text-3xl font-bold mt-1">${stats.revisit}</p>
+                        </div>
+                    </div>
+
+                    <!-- Charts -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="bg-gray-800 rounded-xl p-6">
+                            <h3 class="text-xl font-bold text-white mb-4">Topic-wise Progress</h3>
+                            <div style="max-height: 280px;">
+                                ${topicStats.length > 0 
+                                    ? '<canvas id="topicChart"></canvas>'
+                                    : '<p class="text-gray-400 text-center py-20">No data yet. Start adding problems!</p>'}
+                            </div>
+                        </div>
+                        <div class="bg-gray-800 rounded-xl p-6">
+                            <h3 class="text-xl font-bold text-white mb-4">Difficulty Distribution</h3>
+                            <div style="max-height: 280px;">
+                                ${difficultyStats.length > 0
+                                    ? '<canvas id="difficultyChart"></canvas>'
+                                    : '<p class="text-gray-400 text-center py-20">No data yet. Start adding problems!</p>'}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderProblems() {
+            const filteredProblems = getFilteredProblems();
+
+            return `
+                <div class="space-y-6">
+                    <!-- Filters -->
+                    <div class="bg-gray-800 rounded-xl p-4">
+                        <div class="flex flex-wrap gap-4">
+                            <div class="flex-1 min-w-[200px]">
+                                <input type="text" placeholder="Search problems..." value="${state.searchQuery}" 
+                                    oninput="state.searchQuery = this.value; render();"
+                                    class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500">
+                            </div>
+                            <select onchange="state.filterTopic = this.value; render();" class="px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500">
+                                <option value="all">All Topics</option>
+                                ${topics.map(t => `<option value="${t}" ${state.filterTopic === t ? 'selected' : ''}>${t}</option>`).join('')}
+                            </select>
+                            <select onchange="state.filterStatus = this.value; render();" class="px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500">
+                                <option value="all">All Status</option>
+                                <option value="solved" ${state.filterStatus === 'solved' ? 'selected' : ''}>Solved</option>
+                                <option value="unsolved" ${state.filterStatus === 'unsolved' ? 'selected' : ''}>Unsolved</option>
+                                <option value="revisit" ${state.filterStatus === 'revisit' ? 'selected' : ''}>Revisit</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Problems List -->
+                    <div class="space-y-3">
+                        ${filteredProblems.length > 0 ? filteredProblems.map(p => `
+                            <div class="bg-gray-800 rounded-xl p-4 hover:bg-gray-700 transition">
+                                <div class="flex items-start justify-between">
+                                    <div class="flex-1">
+                                        <div class="flex items-center gap-3 flex-wrap">
+                                            <h3 class="text-lg font-semibold text-white">${p.name}</h3>
+                                            <span class="px-2 py-1 rounded text-xs font-medium ${
+                                                p.status === 'solved' ? 'bg-green-500/20 text-green-400' :
+                                                p.status === 'unsolved' ? 'bg-red-500/20 text-red-400' :
+                                                'bg-yellow-500/20 text-yellow-400'
+                                            }">${p.status}</span>
+                                        </div>
+                                        <div class="flex flex-wrap gap-3 mt-2 text-sm text-gray-400">
+                                            <span>⭐ ${p.difficulty}</span>
+                                            <span>•</span>
+                                            <span>${p.topic}</span>
+                                            <span>•</span>
+                                            <span>${p.platform}</span>
+                                            ${p.dateSolved ? `<span>•</span><span>📅 ${p.dateSolved}</span>` : ''}
+                                        </div>
+                                        ${p.notes ? `<p class="mt-2 text-sm text-gray-400">${p.notes}</p>` : ''}
+                                        ${p.link ? `<a href="${p.link}" target="_blank" class="text-purple-400 hover:text-purple-300 text-sm mt-2 inline-block">View Problem →</a>` : ''}
+                                    </div>
+                                    <div class="flex gap-2 ml-4">
+                                        <button onclick="updateProblemStatus(${p.id}, '${p.status === 'solved' ? 'unsolved' : 'solved'}');" 
+                                            class="px-3 py-1 rounded-lg text-sm font-medium transition ${
+                                                p.status === 'solved' 
+                                                    ? 'bg-gray-700 text-gray-300 hover:bg-gray-600' 
+                                                    : 'bg-green-500 text-white hover:bg-green-600'
+                                            }">
+                                            ${p.status === 'solved' ? 'Unsolve' : 'Mark Solved'}
+                                        </button>
+                                        <button onclick="deleteProblem(${p.id});" class="px-3 py-1 bg-red-500/20 text-red-400 rounded-lg text-sm font-medium hover:bg-red-500/30 transition">
+                                            Delete
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('') : '<div class="bg-gray-800 rounded-xl p-12 text-center"><p class="text-gray-400">No problems found. Try adjusting your filters or add a new problem!</p></div>'}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderModal() {
+            let modalContent = '';
+
+            // Add Problem Modal
+            if (state.showAddModal) {
+                modalContent = `
+                    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50" onclick="if(event.target === this) { state.showAddModal = false; render(); }">
+                        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full max-h-[90vh] overflow-y-auto">
+                            <h2 class="text-2xl font-bold text-white mb-4">Add New Problem</h2>
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Problem Name *</label>
+                                    <input type="text" id="problemName" value="${state.newProblem.name}" 
+                                        oninput="state.newProblem.name = this.value"
+                                        class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" 
+                                        placeholder="e.g., Two Sum">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Platform</label>
+                                    <select onchange="state.newProblem.platform = this.value; render();" class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500">
+                                        ${platforms.map(p => `<option value="${p}" ${state.newProblem.platform === p ? 'selected' : ''}>${p}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Difficulty ${state.newProblem.platform === 'LeetCode' ? '(Easy/Medium/Hard)' : 'Rating'}</label>
+                                    ${state.newProblem.platform === 'LeetCode' ? `
+                                        <select onchange="state.newProblem.difficulty = this.value" class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500">
+                                            <option value="Easy" ${state.newProblem.difficulty === 'Easy' ? 'selected' : ''}>Easy</option>
+                                            <option value="Medium" ${state.newProblem.difficulty === 'Medium' ? 'selected' : ''}>Medium</option>
+                                            <option value="Hard" ${state.newProblem.difficulty === 'Hard' ? 'selected' : ''}>Hard</option>
+                                        </select>
+                                    ` : `
+                                        <input type="number" value="${state.newProblem.difficulty}" 
+                                            oninput="state.newProblem.difficulty = parseInt(this.value)"
+                                            class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" 
+                                            placeholder="900">
+                                    `}
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Topic</label>
+                                    <select onchange="state.newProblem.topic = this.value" class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500">
+                                        ${topics.map(t => `<option value="${t}" ${state.newProblem.topic === t ? 'selected' : ''}>${t}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Status</label>
+                                    <select onchange="state.newProblem.status = this.value" class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500">
+                                        <option value="unsolved" ${state.newProblem.status === 'unsolved' ? 'selected' : ''}>Unsolved</option>
+                                        <option value="solved" ${state.newProblem.status === 'solved' ? 'selected' : ''}>Solved</option>
+                                        <option value="revisit" ${state.newProblem.status === 'revisit' ? 'selected' : ''}>Revisit</option>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Problem Link</label>
+                                    <input type="url" value="${state.newProblem.link}" 
+                                        oninput="state.newProblem.link = this.value"
+                                        class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" 
+                                        placeholder="https://codeforces.com/...">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Notes</label>
+                                    <textarea oninput="state.newProblem.notes = this.value" class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500" rows="3" placeholder="Your approach, learnings, etc.">${state.newProblem.notes}</textarea>
+                                </div>
+                            </div>
+                            <div class="flex gap-3 mt-6">
+                                <button onclick="addProblem();" class="flex-1 px-4 py-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white rounded-lg font-medium hover:from-purple-600 hover:to-pink-600 transition">
+                                    Add Problem
+                                </button>
+                                <button onclick="state.showAddModal = false; render();" class="px-4 py-2 bg-gray-700 text-white rounded-lg font-medium hover:bg-gray-600 transition">
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            // Sync Profile Modal
+            if (state.showSyncModal) {
+                modalContent = `
+                    <div class="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50" onclick="if(event.target === this) { state.showSyncModal = false; render(); }">
+                        <div class="bg-gray-800 rounded-xl p-6 max-w-md w-full">
+                            <h2 class="text-2xl font-bold text-white mb-2">Sync Your Profile</h2>
+                            <p class="text-gray-400 text-sm mb-4">Import your solved problems automatically from your profile</p>
+                            
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Platform</label>
+                                    <select onchange="state.syncData.platform = this.value; render();" class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                        <option value="CodeForces" ${state.syncData.platform === 'CodeForces' ? 'selected' : ''}>CodeForces</option>
+                                        <option value="LeetCode" ${state.syncData.platform === 'LeetCode' ? 'selected' : ''}>LeetCode</option>
+                                        <option value="CodeChef" ${state.syncData.platform === 'CodeChef' ? 'selected' : ''}>CodeChef (Coming Soon)</option>
+                                        <option value="AtCoder" ${state.syncData.platform === 'AtCoder' ? 'selected' : ''}>AtCoder (Coming Soon)</option>
+                                    </select>
+                                </div>
+                                
+                                <div>
+                                    <label class="block text-sm font-medium text-gray-300 mb-1">Username / Handle</label>
+                                    <input type="text" value="${state.syncData.username}" 
+                                        oninput="state.syncData.username = this.value; state.syncData.error = '';"
+                                        class="w-full px-4 py-2 bg-gray-700 text-white rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500" 
+                                        placeholder="${state.syncData.platform === 'CodeForces' ? 'e.g., tourist' : 'Your username'}"
+                                        ${state.syncData.syncing ? 'disabled' : ''}>
+                                </div>
+
+                                ${state.syncData.error ? `
+                                    <div class="bg-red-500/20 border border-red-500 rounded-lg p-3">
+                                        <p class="text-red-400 text-sm">${state.syncData.error}</p>
+                                    </div>
+                                ` : ''}
+
+                                <div class="bg-blue-500/20 border border-blue-500 rounded-lg p-3">
+                                    <p class="text-blue-400 text-sm">
+                                        <strong>Note:</strong> This will fetch your last 100 accepted submissions from ${state.syncData.platform}. 
+                                        ${state.syncData.platform === 'LeetCode' ? 'LeetCode API may be blocked by CORS policies.' : 'Make sure your profile is public.'}
+                                    </p>
+                                </div>
+                            </div>
+                            
+                            <div class="flex gap-3 mt-6">
+                                <button onclick="syncProfile();" 
+                                    ${state.syncData.syncing ? 'disabled' : ''}
+                                    class="flex-1 px-4 py-2 bg-gradient-to-r from-blue-500 to-cyan-500 text-white rounded-lg font-medium hover:from-blue-600 hover:to-cyan-600 transition disabled:opacity-50 disabled:cursor-not-allowed">
+                                    ${state.syncData.syncing ? '🔄 Syncing...' : '✨ Start Sync'}
+                                </button>
+                                <button onclick="state.showSyncModal = false; state.syncData.error = ''; render();" 
+                                    ${state.syncData.syncing ? 'disabled' : ''}
+                                    class="px-4 py-2 bg-gray-700 text-white rounded-lg font-medium hover:bg-gray-600 transition disabled:opacity-50">
+                                    Cancel
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            return modalContent;
+        }
+
+        function render() {
+            const app = document.getElementById('app');
+            app.innerHTML = `
+                ${renderHeader()}
+                ${renderNavigation()}
+                <div class="max-w-7xl mx-auto px-4 py-8">
+                    ${state.currentView === 'dashboard' ? renderDashboard() : renderProblems()}
+                </div>
+                ${renderModal()}
+            `;
+
+            // Create charts after rendering
+            if (state.currentView === 'dashboard') {
+                setTimeout(createCharts, 100);
+            }
+        }
+
+        // Initial render
+        render();
+    </script>
+</body>
+</html>
